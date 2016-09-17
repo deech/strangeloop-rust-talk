@@ -170,7 +170,6 @@
       Closure(KlClosure),
       Vector(Rc<UniqueVector>),
       Stream(Rc<KlStream>),
-      Nil,
       Recur(Vec<Rc<KlElement>>)
   }
 #+END_EXAMPLE
@@ -180,8 +179,7 @@
   pub enum KlClosure {
       FeedMe(Rc<Fn(Rc<KlElement>) -> KlClosure>),
       Thunk(Rc<Fn() -> Rc<KlElement>>),
-      Done(Result<Option<Rc<KlElement>>,Rc<KlError>>),
-      Trampoline(Rc<Fn() -> Rc<KlElement>>)
+      Done(Result<Option<Rc<KlElement>>,Rc<KlError>>)
   }
 #+END_EXAMPLE
 * Example
@@ -195,7 +193,7 @@
           &KlElement::String(ref s) => {
               Done(Ok(Some(Rc::new(Symbol(s.clone())))))
           },
-          _ => Done(shen_make_error("..."))
+          _ => Done(make_error("..."))
       }}))}
 #+END_EXAMPLE
 * Example
@@ -223,11 +221,11 @@
        | a_thunk | {
        ...
           move | b_thunk | {
-            let forced = shen_force_thunk(a_thunk.clone())
+            let forced = force_thunk(a_thunk.clone())
             match &*forced {
               ...
               _ => {
-                    let forced = shen_force_thunk(b_thunk)
+                    let forced = force_thunk(b_thunk)
                     match &*forced {
                       ...
                       _ => true
@@ -274,7 +272,7 @@ pub fn lookup_function(s: &String) -> Option<KlClosure> {
                               Rc::new(Cons(vec![]))])
     {
       Ok(c) => c.clone(),
-      Err(s) => Done(shen_make_error(s.clone().as_str()))
+      Err(s) => Done(make_error(s.clone().as_str()))
     }
   #+END_EXAMPLE
 * Code Generation
@@ -346,10 +344,7 @@ pub fn lookup_function(s: &String) -> Option<KlClosure> {
         {
         ...
       })),
-      Rc::new(KlElement::Number(KlNumber::Int(1))))
-  {
-    ...
-  }
+      ...
 #+END_EXAMPLE
 
 * Code Generation
@@ -371,5 +366,134 @@ pub fn lookup_function(s: &String) -> Option<KlClosure> {
           ...
           })),
           ...
-#+END_EXAMPLE*
+#+END_EXAMPLE
 * Tail Calls
+- Paths to tail calls
+ #+BEGIN_EXAMPLE
+   (defun length (accum list)
+      (cond
+        ((= list ()) accum)
+        (true (length (+ accum 1) (tl list)))))
+ #+END_EXAMPLE
+- [3 2 1]
+* Tail Calls
+- Token representation
+  #+BEGIN_EXAMPLE
+    [Cons([Symbol("defun"), Symbol("length"), Cons(...),
+      Cons([Symbol("cond"),
+        Cons([Cons([Symbol("="), ...]),
+        Cons(Symbol("true"), [Symbol("length"),
+                               Cons([Symbol("+"), ...]),
+                               Cons([Symbol("tl"), ...])]) ...
+  #+END_EXAMPLE
+* Tail Calls
+- Mark tail calls
+  #+BEGIN_EXAMPLE
+    [Cons([Symbol("defun"), Symbol("length"), Cons(...),
+      Cons([Symbol("cond"),
+        Cons(...),
+        Cons(..., [Recur [Cons([Symbol("+"), ...]),
+                          Cons([Symbol("tl"), ...])]]) ...
+  #+END_EXAMPLE
+- Token Type
+  #+BEGIN_EXAMPLE
+    #[derive(Debug, Clone)]
+    pub enum KlToken {
+        ...
+        Recur(Vec<KlToken>)
+    }
+  #+END_EXAMPLE
+* Tail Calls
+- Equivalent Element Type
+  #+BEGIN_EXAMPLE
+    #[derive(Clone,Debug)]
+    pub enum KlElement {
+        ...
+        Recur(Vec<Rc<KlElement>>)
+    }
+  #+END_EXAMPLE
+* Tail Calls
+- Add trampoline to closure
+  #+BEGIN_EXAMPLE
+    ..(move |accum|
+     ..(move |list|
+        let trampoline = | accum,list| {
+            match function_apply("cond", vec![
+                Rc::new(
+                  Recur(vec![
+                    match function_apply("+", vec![..]) {
+                      ...
+                    },
+                    match function_apply("tl", vec![..]) {
+                      ...
+                    }
+              ...
+           }
+        ...
+  #+END_EXAMPLE
+* Tail Calls
+ #+BEGIN_EXAMPLE
+   ...(move |accum|
+     ...(move |list|
+         let trampoline = |accum,list| {
+               ...
+         }
+         ...
+         let mut done= None;
+         let mut args = vec![accum.clone(),list.clone()];
+         while !done.is_some() {
+           let result = trampoline(args[0].clone(),args[1].clone());
+           match &*result {
+              &Recur(ref v) => args = v.clone(),
+              output => done = Some(Done(Ok(Some(result.clone()))))
+           };
+         }
+        done.unwrap()
+        ...
+ #+END_EXAMPLE
+* Benchmarks
+- Test program
+  #+BEGIN_EXAMPLE
+    (defun build (counter list)
+      (cond
+         ((= 0 counter) list)
+         (true (build (- counter 1)
+                      (cons counter list)))))
+
+    (build 100000 ())
+  #+END_EXAMPLE
+* Benchmarks
+- SBCL
+  - Runtime: sub second
+  - Memory:
+    - 23MB initial
+    - jumps to 50MB
+    - holds ...
+- Lua
+  - Runtime: sub second
+  - Memory:
+    - 2MB initial
+    - jumps to 14MB
+    - holds ...
+* Benchmarks
+- Guile
+  - Runtime: 1.5 seconds
+  - Memory:
+    - 15MB initial
+    - jumps to 18MB
+    - holds
+- Rust Klambda
+  - Runtime: 7 mins!!!!
+  - Memory:
+    - 5.5 MB steady
+* Lessons learned
+- Needs more static analysis
+  - Unnecessary copies
+  - Currying is complex!
+  - Most function calls are saturated
+- Plenty of low hanging fruit
+  - Rust inexperience
+- Generating Rust is hard but worth it.
+  - Type checker catchs errors in output!
+* Thanks!
+- Questions!
