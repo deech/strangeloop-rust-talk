@@ -1,0 +1,375 @@
+#+TITLE: Rusty Runtimes
+#+AUTHOR: Aditya Siram
+#+OPTIONS: H:1 toc:f
+#+LATEX_CLASS: beamer
+#+LATEX_listingsCLASS_OPTIONS: [presentation]
+#+BEAMER_THEME: Madrid
+#+EPRESENT_FRAME_LEVEL: 1
+
+* Overview
+- Rust is a systems programming language
+- Less used for language development
+- Explores Rust for language implementation
+- And as a compilation target!
+* About Me
+- ML/Lisp background
+- Long time user, first time implementor
+- Very little low level knowledge
+- Mostly managed runtimes
+* Rust
+- Lot of ML influence
+  - Pattern matching
+  - Emphasis in immutability
+- Easy to learn.
+- Mature metaprogramming.
+- But still mostly imperative
+* KLambda
+- Lisp-ish
+  #+BEGIN_EXAMPLE
+    (defun adder (X) (+ 1 X))
+  #+END_EXAMPLE
+- Scheme-ish
+  #+BEGIN_EXAMPLE
+    (defun length (list accum)
+       (cond ((= () list) accum)
+       (true (length (tl list) (+ accum 1)))))
+  #+END_EXAMPLE
+- TCO'ed
+* KLambda
+- Curried!
+  #+BEGIN_EXAMPLE
+    (let F (map (lambda X (+ 1 X)))
+       (F (cons 1 (cons 2 (cons 3 ())))))
+  #+END_EXAMPLE
+- Tiny
+- Has a spec!
+* Types
+- Base types
+  #+BEGIN_EXAMPLE
+    #[derive(Debug, Clone)]
+    pub enum KlToken {
+        Symbol(String),
+        Number(KlNumber),
+        String(String),
+        Cons(Vec<KlToken>),
+        Recur(Vec<KlToken>)
+    }
+  #+END_EXAMPLE
+- Numbers
+  #+BEGIN_EXAMPLE
+    #[derive(Debug, Clone)]
+    pub enum KlNumber {
+        Float(f64),
+        Int(i64),
+    }
+  #+END_EXAMPLE
+* Parsing
+- Nom.
+- Very macro heavy!
+* Parsing a string
+- Top level
+  #+BEGIN_EXAMPLE
+    named!(klstring<KlToken>,
+     chain!(
+        char!('\"') ~
+        contents:  many0!(klstringinnards) ~
+        char!('\"'),
+        || KlToken::String(make_quoted_string(contents))
+     )
+    );
+  #+END_EXAMPLE
+- Innards
+  #+BEGIN_EXAMPLE
+    named!(klstringinnards< &[u8] >,
+           escaped!(none_of!("\"\\"), '\\', one_of!("\"n\\"))
+           );
+  #+END_EXAMPLE
+* Debugging
+- Rust macro debugging is nice!
+  #+BEGIN_EXAMPLE
+    named!(klstring<KlToken>,
+      chain!(
+          ...
+          ...
+          char!("hello"),
+          || ...
+    ));
+  #+END_EXAMPLE
+- Error
+  #+BEGIN_EXAMPLE
+   --> src/main.rs:442:1
+    |
+442 | named!(klstring<KlToken>,
+    | ^
+    |
+  #+END_EXAMPLE
+* Parsing Symbols
+- Parsing symbols
+  #+BEGIN_EXAMPLE
+    named!(klsymbol<KlToken>,
+      chain!(
+      initial: one_of!(CHARACTERS) ~
+      remainder: many0!(
+        alt_complete!(
+            one_of!(DIGITS) |
+            one_of!(CHARACTERS)
+        )
+      ),
+      || {
+          let mut res : Vec <char> = vec![initial];
+          res.extend(remainder);
+          KlToken::Symbol(res.into_iter().collect())
+      })
+    );
+  #+END_EXAMPLE
+* Writing A Macro
+- s-expression
+ #+BEGIN_EXAMPLE
+  (func b 1 2 3)
+ #+END_EXAMPLE
+- Parser
+  #+BEGIN_EXAMPLE
+    named!(klsexp<KlToken>,
+      chain!(
+        char!('(') ~
+        inner: many0_until!(char!(')'), klsexpinnards) ~
+        char!(')'),
+        || {
+            KlToken::Cons(inner)
+        }
+      )
+    );
+  #+END_EXAMPLE
+* Writing A Macro
+#+BEGIN_EXAMPLE
+  macro_rules! many0_until (
+   ($input:expr, $stopmac:ident!( $($args:tt)* ), $submac:ident!( $($args2:tt)* )) => (
+      {
+        let mut res = Vec::new();
+        let mut input = $input;
+        let mut loop_result = Ok(());
+
+        while input.input_len() != 0 {
+          match $stopmac!(input, $($args)*) {
+            IResult::Error(_) => {
+              match $submac!(input, $($args2)*) {
+                IResult::Error(_) => {
+                    break;
+                },
+                IResult::Incomplete(Needed::Unknown) => {
+                ...
+#+END_EXAMPLE
+* KLambda Types
+#+BEGIN_EXAMPLE
+  #[derive(Clone,Debug)]
+  pub enum KlElement {
+      Symbol(String),
+      Number(KlNumber),
+      String(String),
+      Cons(Vec<Rc<KlElement>>),
+      Closure(KlClosure),
+      Vector(Rc<UniqueVector>),
+      Stream(Rc<KlStream>),
+      Nil,
+      Recur(Vec<Rc<KlElement>>)
+  }
+#+END_EXAMPLE
+* Closures
+#+BEGIN_EXAMPLE
+  #[derive(Clone)]
+  pub enum KlClosure {
+      FeedMe(Rc<Fn(Rc<KlElement>) -> KlClosure>),
+      Thunk(Rc<Fn() -> Rc<KlElement>>),
+      Done(Result<Option<Rc<KlElement>>,Rc<KlError>>),
+      Trampoline(Rc<Fn() -> Rc<KlElement>>)
+  }
+#+END_EXAMPLE
+* Example
+- Turning a string into a symbol
+#+BEGIN_EXAMPLE
+  pub fn intern() -> KlClosure {
+   FeedMe(
+    Rc::new(
+     | string | {
+      match &*string {
+          &KlElement::String(ref s) => {
+              Done(Ok(Some(Rc::new(Symbol(s.clone())))))
+          },
+          _ => Done(shen_make_error("..."))
+      }}))}
+#+END_EXAMPLE
+* Example
+- Pos
+  #+BEGIN_EXAMPLE
+    pub fn pos() -> KlClosure {
+     FeedMe(
+      Rc::new(| string | {
+        FeedMe(
+         Rc::new(move | number | {
+           let string = string.clone();
+            match &*string {
+              &KlElement::String(ref s) => {
+                   ...
+              },
+               ...
+           },
+           _ => ...
+  #+END_EXAMPLE
+* Example
+- And
+  #+BEGIN_EXAMPLE
+    pub fn and () -> KlClosure {
+      ...
+       | a_thunk | {
+       ...
+          move | b_thunk | {
+            let forced = shen_force_thunk(a_thunk.clone())
+            match &*forced {
+              ...
+              _ => {
+                    let forced = shen_force_thunk(b_thunk)
+                    match &*forced {
+                      ...
+                      _ => true
+                    }
+      ...
+  #+END_EXAMPLE
+* Stored in a Function Table
+- Global mutable function table
+  #+BEGIN_EXAMPLE
+    thread_local!(
+    static FUNCTION_TABLE: RefCell<HashMap<String, KlClosure>> =
+         RefCell::new(HashMap::new())
+    )
+  #+END_EXAMPLE
+- Bootstrapping
+#+BEGIN_EXAMPLE
+  pub fn fill_function_table() {
+   FUNCTION_TABLE.with(| function_table | {
+       let mut map = function_table.borrow_mut();
+       map.insert("pos" , pos());
+       map.insert("and" , and());
+       ...
+#+END_EXAMPLE
+* Lookup
+#+BEGIN_EXAMPLE
+pub fn lookup_function(s: &String) -> Option<KlClosure> {
+    FUNCTION_TABLE.with(|table|{
+      let table = table.borrow();
+      let function = table.get(s);
+      match function {
+        Some(f) => Some((*f).clone()),
+        None => None
+        ...
+#+END_EXAMPLE
+* Code Generation
+- Function calls
+  #+BEGIN_EXAMPLE
+    (cons 1 ())
+  #+END_EXAMPLE
+- Rust output
+  #+BEGIN_EXAMPLE
+    match function_apply(String::from("cons"),
+                         vec![Rc::new(Number(Int(1))),
+                              Rc::new(Cons(vec![]))])
+    {
+      Ok(c) => c.clone(),
+      Err(s) => Done(shen_make_error(s.clone().as_str()))
+    }
+  #+END_EXAMPLE
+* Code Generation
+- Lets
+  #+BEGIN_EXAMPLE
+    (let X 1 (+ X X))
+    ((lambda X (+ X X)) 1)
+  #+END_EXAMPLE
+* Code Generation
+- Lambda
+  #+BEGIN_EXAMPLE
+    match apply_lambda(
+      FeedMe(
+        Rc::new(move |X| {
+           let X_Copy = (*X).clone();
+           match function_apply(
+              String::from("+"), vec![
+                 Rc::new(X_Copy.clone()),
+                 Rc::new(X_Copy.clone())
+           ])
+           {
+             Ok(c) => ..,
+             Err(s) => ..
+           }
+        })),
+        Rc::new(KlElement::Number(KlNumber::Int(1))))
+      ...
+  #+END_EXAMPLE
+* Code Generation
+- Lambda
+  #+BEGIN_EXAMPLE
+    match apply_lambda(
+      ...
+               (move |X| {
+           let X_Copy = (*X).clone();
+                 function_apply(
+              String::from("+"), vec![
+              (X_Copy.clone()),
+                        (X_Copy.clone())
+           ])
+           {
+             Ok(c) => ..,
+             Err(s) => ..
+           }
+        })),
+                                  KlNumber::Int(1)
+      ...
+  #+END_EXAMPLE
+* Code Generation
+#+BEGIN_EXAMPLE
+  (let X 2 (let Y (* X X) X))
+  ((lambda X ((lambda Y X) (* X X))) 2)
+#+END_EXAMPLE
+* Code Generation
+#+BEGIN_EXAMPLE
+  match lambda_apply(
+   FeedMe(Rc...(move |X| {
+     let X_Copy = (*X).clone();
+     match lambda_apply(
+      FeedMe(Rc::new(move |Y| {
+        let X = X.clone();
+        let X_Copy = (*X).clone();
+        let Y_Copy = (*Y).clone();
+          KlClosure::Done(Ok(Some(Y_Copy.clone())))
+      })),
+      match function_apply(String::from("+"), vec![
+          Rc::new(X_Copy.clone()),
+          Rc::new(X_Copy.clone())])
+        {
+        ...
+      })),
+      Rc::new(KlElement::Number(KlNumber::Int(1))))
+  {
+    ...
+  }
+#+END_EXAMPLE
+
+* Code Generation
+#+BEGIN_EXAMPLE
+    match lambda_apply(
+                 (move |X| {
+       let X_Copy = (*X).clone();
+       match lambda_apply(
+                      (move |Y| {
+          let X = X.clone();
+          let X_Copy = (*X).clone();
+          let Y_Copy = (*Y).clone();
+
+
+        match function_apply(            ("+"), vec![
+                   (X_Copy.clone()),
+                   (X_Copy.clone())])
+          {
+          ...
+          })),
+          ...
+#+END_EXAMPLE*
+* Tail Calls
